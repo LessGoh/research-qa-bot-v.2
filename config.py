@@ -1,14 +1,14 @@
 """
-Конфигурация приложения для Q/A исследовательского бота
+Configuration for Research Q/A Bot application
 """
 import streamlit as st
 from typing import Optional
 
 
 class Settings:
-    """Настройки приложения"""
+    """Application settings"""
     
-    # API Keys - будут загружены из Streamlit Secrets
+    # API Keys - loaded from Streamlit Secrets
     @property
     def openai_api_key(self) -> str:
         return st.secrets["OPENAI_API_KEY"]
