@@ -55,6 +55,7 @@ class LlamaService:
             List of search results with metadata
         """
         if not self._ensure_initialized():
+            st.error("❌ LlamaIndex service not initialized")
             return []
             
         try:
@@ -64,28 +65,64 @@ class LlamaService:
             # Ensure top_k is within limits
             top_k = min(max(top_k, 1), settings.MAX_SIMILARITY_TOP_K)
             
+            st.write(f"🔍 Searching with top_k={top_k}")
+            
             # Get retriever and perform search
             retriever = self.index.as_retriever(similarity_top_k=top_k)
+            st.write("✅ Retriever created successfully")
+            
             nodes = retriever.retrieve(query)
+            st.write(f"📄 Retrieved {len(nodes)} nodes from index")
+            
+            if not nodes:
+                st.warning("⚠️ No nodes returned from search")
+                return []
             
             # Format results
             results = []
             for i, node in enumerate(nodes):
+                # Debug node structure
+                st.write(f"🔸 Processing node {i+1}")
+                st.write(f"   - Node type: {type(node)}")
+                st.write(f"   - Has text: {hasattr(node, 'text')}")
+                st.write(f"   - Has metadata: {hasattr(node, 'metadata')}")
+                st.write(f"   - Has score: {hasattr(node, 'score')}")
+                
+                node_text = getattr(node, 'text', '') or getattr(node, 'node', {}).get('text', '')
+                node_metadata = getattr(node, 'metadata', {}) or getattr(node, 'node', {}).get('metadata', {})
+                node_score = getattr(node, 'score', 0.0)
+                
+                if not node_text:
+                    st.warning(f"   - ⚠️ Node {i+1} has no text content")
+                    continue
+                
                 result = {
                     "rank": i + 1,
-                    "content": node.text,
-                    "score": getattr(node, 'score', 0.0),
-                    "metadata": node.metadata if hasattr(node, 'metadata') else {},
-                    "node_id": node.node_id if hasattr(node, 'node_id') else f"node_{i}",
+                    "content": node_text,
+                    "score": node_score,
+                    "metadata": node_metadata,
+                    "node_id": getattr(node, 'node_id', '') or f"node_{i}",
                 }
                 results.append(result)
                 
+                # Show preview of content
+                preview = node_text[:100] + "..." if len(node_text) > 100 else node_text
+                st.write(f"   - Content preview: {preview}")
+                
             logging.info(f"Retrieved {len(results)} documents for query: {query[:50]}...")
+            st.success(f"✅ Successfully processed {len(results)} results")
             return results
             
         except Exception as e:
-            logging.error(f"Error searching documents: {str(e)}")
-            st.error(f"Search error: {str(e)}")
+            error_msg = f"Error searching documents: {str(e)}"
+            logging.error(error_msg)
+            st.error(f"❌ Search error: {str(e)}")
+            st.write(f"Error type: {type(e)}")
+            
+            # Try to get more details
+            import traceback
+            st.write("Full traceback:")
+            st.code(traceback.format_exc())
             return []
     
     def get_query_engine(self, similarity_top_k: int = None):
