@@ -22,6 +22,9 @@ class Settings:
     LLAMACLOUD_PROJECT_NAME = "Default"
     LLAMACLOUD_ORGANIZATION_ID = "858afa1e-d3dc-4a96-8783-d4f3798b0643"
     
+    # Alternative: Use pipeline ID directly
+    LLAMACLOUD_PIPELINE_ID = "207e89f0-702d-45ed-9c14-cc80060c2aef"
+    
     # OpenAI Configuration
     OPENAI_MODEL = "gpt-4o-2024-08-06"
     OPENAI_TEMPERATURE = 0.1
