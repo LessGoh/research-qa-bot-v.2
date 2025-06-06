@@ -207,77 +207,109 @@ class LlamaService:
         try:
             import requests
             
-            # Use the direct retrieval endpoint
+            # Use the correct retrieval endpoint from your screenshot
             endpoint_url = "https://api.cloud.llamaindex.ai/api/v1/pipelines/207e89f0-702d-45ed-9c14-cc80060c2aef/retrieve"
             
             headers = {
                 "Authorization": f"Bearer {settings.llama_cloud_api_key}",
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
+                "Accept": "application/json"
             }
             
+            # Correct payload structure for LlamaCloud API
             payload = {
                 "query": query,
-                "similarity_top_k": top_k
+                "similarity_top_k": top_k,
+                "filters": {},
+                "dense_similarity_top_k": top_k
             }
             
-            st.write(f"📡 Making direct HTTP request to: {endpoint_url}")
+            st.write(f"📡 Making HTTP request to: {endpoint_url}")
+            st.write(f"🔑 Using API key: {settings.llama_cloud_api_key[:10]}...")
+            st.write(f"📦 Payload: {payload}")
             
             response = requests.post(
                 endpoint_url, 
                 json=payload, 
                 headers=headers,
-                timeout=30
+                timeout=60  # Увеличил timeout
             )
+            
+            st.write(f"📊 Response status: {response.status_code}")
             
             if response.status_code == 200:
                 data = response.json()
-                st.write(f"✅ HTTP request successful: {response.status_code}")
+                st.write(f"✅ HTTP request successful")
+                st.write(f"📄 Response keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
                 
-                # Process the response
+                # Debug: show raw response structure
+                st.write("Raw response preview:")
+                st.json(data if len(str(data)) < 1000 else str(data)[:1000] + "...")
+                
+                # Process the response - try different possible structures
                 results = []
-                if 'retrieval_results' in data:
-                    for i, item in enumerate(data['retrieval_results'][:top_k]):
+                
+                # Try different response formats
+                items = None
+                if isinstance(data, dict):
+                    # Common LlamaCloud response formats
+                    if 'retrieval_results' in data:
+                        items = data['retrieval_results']
+                    elif 'results' in data:
+                        items = data['results']
+                    elif 'nodes' in data:
+                        items = data['nodes']
+                    elif 'data' in data:
+                        items = data['data']
+                    else:
+                        # If data itself is the array
+                        if isinstance(data, list):
+                            items = data
+                
+                if items and isinstance(items, list):
+                    for i, item in enumerate(items[:top_k]):
+                        # Try to extract content from different possible fields
+                        content = ""
+                        if isinstance(item, dict):
+                            content = (item.get('text') or 
+                                     item.get('content') or 
+                                     item.get('node_content') or
+                                     item.get('page_content') or
+                                     str(item))
+                        else:
+                            content = str(item)
+                        
                         result = {
                             "rank": i + 1,
-                            "content": item.get('text', item.get('content', '')),
-                            "score": item.get('score', 0.0),
-                            "metadata": item.get('metadata', {}),
-                            "node_id": item.get('id', f"http_node_{i}"),
+                            "content": content,
+                            "score": item.get('score', 0.8) if isinstance(item, dict) else 0.8,
+                            "metadata": item.get('metadata', {}) if isinstance(item, dict) else {},
+                            "node_id": item.get('id', f"http_node_{i}") if isinstance(item, dict) else f"http_node_{i}",
                         }
                         results.append(result)
+                        
+                        # Show preview
+                        preview = content[:100] + "..." if len(content) > 100 else content
+                        st.write(f"📄 Result {i+1}: {preview}")
                 
-                st.success(f"✅ HTTP fallback successful - found {len(results)} results")
-                return results
+                if results:
+                    st.success(f"✅ HTTP fallback successful - found {len(results)} results")
+                    return results
+                else:
+                    st.warning("⚠️ HTTP request successful but no usable results found")
+                    
             else:
-                st.error(f"❌ HTTP request failed: {response.status_code} - {response.text}")
+                st.error(f"❌ HTTP request failed: {response.status_code}")
+                st.write(f"Response text: {response.text}")
                 
+        except requests.exceptions.Timeout:
+            st.error("❌ HTTP request timed out")
+        except requests.exceptions.ConnectionError:
+            st.error("❌ HTTP connection error")
         except Exception as e:
             st.error(f"❌ HTTP fallback failed: {str(e)}")
-        
-        # Final fallback - try query engine approach
-        try:
-            st.info("🔄 Trying query engine fallback...")
-            query_engine = self.index.as_query_engine(similarity_top_k=top_k)
-            
-            if query_engine:
-                st.write("✅ Query engine created successfully")
-                response = query_engine.query(query)
-                
-                if response:
-                    # Create mock result from query engine response
-                    mock_result = {
-                        "rank": 1,
-                        "content": str(response),
-                        "score": 0.8,
-                        "metadata": {"source": "LlamaCloud Query Engine", "fallback": True},
-                        "node_id": "fallback_node_1",
-                    }
-                    
-                    st.success("✅ Query engine fallback successful")
-                    return [mock_result]
-            
-        except Exception as fallback_e:
-            st.error(f"❌ Query engine fallback also failed: {str(fallback_e)}")
+            import traceback
+            st.code(traceback.format_exc())
         
         st.error("❌ All search methods failed")
         return []
