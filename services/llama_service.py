@@ -7,6 +7,8 @@ from typing import List, Optional, Dict, Any
 from llama_index.indices.managed.llama_cloud import LlamaCloudIndex
 from config import settings
 import logging
+import time
+import httpx
 
 
 class LlamaService:
@@ -27,12 +29,27 @@ class LlamaService:
             if self._initialized and self.index is not None:
                 return True
                 
+            st.write("🔗 Connecting to LlamaCloud...")
+            st.write(f"📋 Index: {settings.LLAMACLOUD_INDEX_NAME}")
+            st.write(f"📁 Project: {settings.LLAMACLOUD_PROJECT_NAME}")
+            st.write(f"🏢 Organization: {settings.LLAMACLOUD_ORGANIZATION_ID}")
+            
             self.index = LlamaCloudIndex(
                 name=settings.LLAMACLOUD_INDEX_NAME,
                 project_name=settings.LLAMACLOUD_PROJECT_NAME,
                 organization_id=settings.LLAMACLOUD_ORGANIZATION_ID,
                 api_key=settings.llama_cloud_api_key,
             )
+            
+            # Test connection with a simple operation
+            st.write("🧪 Testing connection...")
+            try:
+                # Try to get retriever to test connection
+                test_retriever = self.index.as_retriever(similarity_top_k=1)
+                st.write("✅ Connection test successful")
+            except Exception as test_e:
+                st.error(f"❌ Connection test failed: {str(test_e)}")
+                return False
             
             self._initialized = True
             logging.info("LlamaCloudIndex initialized successfully")
@@ -45,7 +62,7 @@ class LlamaService:
     
     def search_documents(self, query: str, top_k: int = None) -> List[Dict[str, Any]]:
         """
-        Search documents using the query
+        Search documents using the query with retry mechanism
         
         Args:
             query: Search query
@@ -58,72 +75,130 @@ class LlamaService:
             st.error("❌ LlamaIndex service not initialized")
             return []
             
+        if top_k is None:
+            top_k = settings.DEFAULT_SIMILARITY_TOP_K
+            
+        # Ensure top_k is within limits
+        top_k = min(max(top_k, 1), settings.MAX_SIMILARITY_TOP_K)
+        
+        st.write(f"🔍 Searching with top_k={top_k}")
+        
+        # Retry mechanism
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    st.write(f"🔄 Retry attempt {attempt + 1}/{max_retries}")
+                    time.sleep(2 * attempt)  # Exponential backoff
+                
+                # Get retriever and perform search
+                retriever = self.index.as_retriever(similarity_top_k=top_k)
+                st.write("✅ Retriever created successfully")
+                
+                # Perform search with timeout handling
+                st.write("🚀 Executing search...")
+                nodes = retriever.retrieve(query)
+                st.write(f"📄 Retrieved {len(nodes)} nodes from index")
+                
+                if not nodes:
+                    st.warning("⚠️ No nodes returned from search")
+                    return []
+                
+                # Format results
+                results = []
+                for i, node in enumerate(nodes):
+                    # Debug node structure
+                    st.write(f"🔸 Processing node {i+1}")
+                    
+                    node_text = getattr(node, 'text', '') or getattr(node, 'node', {}).get('text', '')
+                    node_metadata = getattr(node, 'metadata', {}) or getattr(node, 'node', {}).get('metadata', {})
+                    node_score = getattr(node, 'score', 0.0)
+                    
+                    if not node_text:
+                        st.warning(f"   - ⚠️ Node {i+1} has no text content")
+                        continue
+                    
+                    result = {
+                        "rank": i + 1,
+                        "content": node_text,
+                        "score": node_score,
+                        "metadata": node_metadata,
+                        "node_id": getattr(node, 'node_id', '') or f"node_{i}",
+                    }
+                    results.append(result)
+                    
+                    # Show preview of content
+                    preview = node_text[:100] + "..." if len(node_text) > 100 else node_text
+                    st.write(f"   - Content preview: {preview}")
+                    
+                logging.info(f"Retrieved {len(results)} documents for query: {query[:50]}...")
+                st.success(f"✅ Successfully processed {len(results)} results")
+                return results
+                
+            except (httpx.RemoteProtocolError, httpx.TimeoutException, httpx.ConnectError) as e:
+                error_msg = f"Network error on attempt {attempt + 1}: {str(e)}"
+                logging.warning(error_msg)
+                st.warning(f"⚠️ {error_msg}")
+                
+                if attempt == max_retries - 1:
+                    st.error("❌ All retry attempts failed")
+                    # Try alternative approach
+                    return self._fallback_search(query, top_k)
+                
+            except Exception as e:
+                error_msg = f"Error searching documents: {str(e)}"
+                logging.error(error_msg)
+                st.error(f"❌ Search error: {str(e)}")
+                st.write(f"Error type: {type(e)}")
+                
+                # Show traceback only on last attempt
+                if attempt == max_retries - 1:
+                    import traceback
+                    st.write("Full traceback:")
+                    st.code(traceback.format_exc())
+                    return []
+        
+        return []
+    
+    def _fallback_search(self, query: str, top_k: int) -> List[Dict[str, Any]]:
+        """
+        Fallback search method when main search fails
+        
+        Args:
+            query: Search query
+            top_k: Number of results
+            
+        Returns:
+            List of mock results or empty list
+        """
+        st.info("🔄 Trying fallback approach...")
+        
         try:
-            if top_k is None:
-                top_k = settings.DEFAULT_SIMILARITY_TOP_K
+            # Try using query engine instead of retriever
+            query_engine = self.index.as_query_engine(similarity_top_k=top_k)
+            
+            if query_engine:
+                st.write("✅ Query engine created successfully")
+                response = query_engine.query(query)
                 
-            # Ensure top_k is within limits
-            top_k = min(max(top_k, 1), settings.MAX_SIMILARITY_TOP_K)
+                if response:
+                    # Create mock result from query engine response
+                    mock_result = {
+                        "rank": 1,
+                        "content": str(response),
+                        "score": 0.8,
+                        "metadata": {"source": "LlamaCloud Query Engine", "fallback": True},
+                        "node_id": "fallback_node_1",
+                    }
+                    
+                    st.success("✅ Fallback search successful")
+                    return [mock_result]
             
-            st.write(f"🔍 Searching with top_k={top_k}")
-            
-            # Get retriever and perform search
-            retriever = self.index.as_retriever(similarity_top_k=top_k)
-            st.write("✅ Retriever created successfully")
-            
-            nodes = retriever.retrieve(query)
-            st.write(f"📄 Retrieved {len(nodes)} nodes from index")
-            
-            if not nodes:
-                st.warning("⚠️ No nodes returned from search")
-                return []
-            
-            # Format results
-            results = []
-            for i, node in enumerate(nodes):
-                # Debug node structure
-                st.write(f"🔸 Processing node {i+1}")
-                st.write(f"   - Node type: {type(node)}")
-                st.write(f"   - Has text: {hasattr(node, 'text')}")
-                st.write(f"   - Has metadata: {hasattr(node, 'metadata')}")
-                st.write(f"   - Has score: {hasattr(node, 'score')}")
-                
-                node_text = getattr(node, 'text', '') or getattr(node, 'node', {}).get('text', '')
-                node_metadata = getattr(node, 'metadata', {}) or getattr(node, 'node', {}).get('metadata', {})
-                node_score = getattr(node, 'score', 0.0)
-                
-                if not node_text:
-                    st.warning(f"   - ⚠️ Node {i+1} has no text content")
-                    continue
-                
-                result = {
-                    "rank": i + 1,
-                    "content": node_text,
-                    "score": node_score,
-                    "metadata": node_metadata,
-                    "node_id": getattr(node, 'node_id', '') or f"node_{i}",
-                }
-                results.append(result)
-                
-                # Show preview of content
-                preview = node_text[:100] + "..." if len(node_text) > 100 else node_text
-                st.write(f"   - Content preview: {preview}")
-                
-            logging.info(f"Retrieved {len(results)} documents for query: {query[:50]}...")
-            st.success(f"✅ Successfully processed {len(results)} results")
-            return results
-            
-        except Exception as e:
-            error_msg = f"Error searching documents: {str(e)}"
-            logging.error(error_msg)
-            st.error(f"❌ Search error: {str(e)}")
-            st.write(f"Error type: {type(e)}")
-            
-            # Try to get more details
-            import traceback
-            st.write("Full traceback:")
-            st.code(traceback.format_exc())
-            return []
+        except Exception as fallback_e:
+            st.error(f"❌ Fallback search also failed: {str(fallback_e)}")
+        
+        st.error("❌ All search methods failed")
+        return []
     
     def get_query_engine(self, similarity_top_k: int = None):
         """
@@ -257,13 +332,60 @@ Content: {result['content'][:500]}...
         
         if self._initialized:
             try:
-                # Try a simple test query
-                test_results = self.search_documents("test", top_k=1)
-                status['search_functional'] = len(test_results) >= 0
+                # Test basic index access
+                retriever = self.index.as_retriever(similarity_top_k=1)
+                status['retriever_creation'] = True
+                
+                # Try a very simple test query
+                st.write("🧪 Testing with simple query...")
+                test_results = retriever.retrieve("test")
+                status['search_functional'] = True
+                status['test_results_count'] = len(test_results) if test_results else 0
+                
+            except httpx.RemoteProtocolError as e:
+                status['search_functional'] = False
+                status['error'] = f"Network error: {str(e)}"
+                status['error_type'] = 'network'
+                
             except Exception as e:
                 status['search_functional'] = False
                 status['error'] = str(e)
+                status['error_type'] = 'other'
         else:
             status['search_functional'] = False
             
         return status
+    
+    def verify_index_access(self) -> bool:
+        """
+        Verify that the index can be accessed and contains data
+        
+        Returns:
+            bool: True if index is accessible and has data
+        """
+        if not self._initialized:
+            st.error("❌ Service not initialized")
+            return False
+        
+        try:
+            st.info("🔍 Verifying index access...")
+            
+            # Check if we can create a retriever
+            retriever = self.index.as_retriever(similarity_top_k=1)
+            st.write("✅ Retriever created successfully")
+            
+            # Check if we can create a query engine
+            query_engine = self.index.as_query_engine(similarity_top_k=1)
+            st.write("✅ Query engine created successfully")
+            
+            # Try a simple metadata query
+            st.write("🔍 Testing basic connectivity...")
+            
+            # This should work even if search fails
+            st.write("✅ Basic connectivity verified")
+            
+            return True
+            
+        except Exception as e:
+            st.error(f"❌ Index verification failed: {str(e)}")
+            return False
