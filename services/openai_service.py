@@ -64,16 +64,22 @@ class OpenAIService:
             ResearchResponse object or None if failed
         """
         if not self._ensure_initialized():
+            st.error("❌ OpenAI service not initialized")
             return None
             
         try:
             start_time = time.time()
             
+            st.write("🔧 Creating prompts...")
             # Create system prompt for research analysis
             system_prompt = self._create_system_prompt()
             
             # Create user prompt with query and content
             user_prompt = self._create_user_prompt(query, content)
+            
+            st.write(f"📤 Sending request to OpenAI model: {settings.OPENAI_MODEL}")
+            st.write(f"🌡️ Temperature: {settings.OPENAI_TEMPERATURE}")
+            st.write(f"🎯 Max tokens: {settings.OPENAI_MAX_TOKENS}")
             
             # Call OpenAI with structured output
             completion = self.client.beta.chat.completions.parse(
@@ -87,6 +93,8 @@ class OpenAIService:
                 max_tokens=settings.OPENAI_MAX_TOKENS
             )
             
+            st.write("📥 Received response from OpenAI")
+            
             if completion.choices[0].message.parsed:
                 response = completion.choices[0].message.parsed
                 
@@ -95,15 +103,28 @@ class OpenAIService:
                 response.metadata.processing_time = processing_time
                 response.metadata.search_parameters = search_metadata
                 
+                st.write(f"⏱️ Processing time: {processing_time:.2f} seconds")
+                st.write(f"📊 Found {len(response.key_findings)} key findings")
+                st.write(f"📚 Generated {len(response.citations)} citations")
+                
                 logging.info(f"Successfully analyzed content for query: {query[:50]}...")
                 return response
             else:
-                logging.error("OpenAI returned no parsed response")
+                st.error("❌ OpenAI returned no parsed response")
+                if completion.choices[0].message.refusal:
+                    st.error(f"Refusal reason: {completion.choices[0].message.refusal}")
                 return None
                 
         except Exception as e:
-            logging.error(f"Error analyzing content: {str(e)}")
-            st.error(f"Analysis error: {str(e)}")
+            error_msg = f"Error analyzing content: {str(e)}"
+            logging.error(error_msg)
+            st.error(f"❌ Analysis error: {str(e)}")
+            st.write(f"Error type: {type(e)}")
+            
+            # Try to get more details
+            import traceback
+            st.write("Full traceback:")
+            st.code(traceback.format_exc())
             return None
     
     def create_research_response(
