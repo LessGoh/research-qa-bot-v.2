@@ -121,11 +121,21 @@ class OpenAIService:
         Returns:
             ResearchResponse or None if failed
         """
+        st.write(f"🤖 Creating research response for {len(search_results)} results")
+        
         if not search_results:
+            st.warning("⚠️ No search results to analyze")
             return self._create_empty_response(query)
             
         # Combine all content
+        st.write("📝 Combining search results...")
         combined_content = self._combine_search_results(search_results)
+        
+        st.write(f"📊 Combined content length: {len(combined_content)} characters")
+        
+        # Show preview of combined content
+        preview = combined_content[:200] + "..." if len(combined_content) > 200 else combined_content
+        st.write(f"Content preview: {preview}")
         
         # Prepare metadata
         search_metadata = {
@@ -134,13 +144,20 @@ class OpenAIService:
             'avg_relevance_score': sum(r.get('score', 0) for r in search_results) / len(search_results)
         }
         
+        st.write(f"📈 Search metadata: {search_metadata}")
+        
         # Analyze with OpenAI
+        st.write("🧠 Sending to OpenAI for analysis...")
         response = self.analyze_content(query, combined_content, search_metadata)
         
         if response:
             # Add source information to citations
+            st.write("📚 Adding citation information...")
             response.citations = self._extract_citations(search_results)
             response.total_sources_found = len(search_results)
+            st.success("✅ Research response created successfully")
+        else:
+            st.error("❌ Failed to create research response")
             
         return response
     
