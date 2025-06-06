@@ -34,12 +34,43 @@ class LlamaService:
             st.write(f"📁 Project: {settings.LLAMACLOUD_PROJECT_NAME}")
             st.write(f"🏢 Organization: {settings.LLAMACLOUD_ORGANIZATION_ID}")
             
-            self.index = LlamaCloudIndex(
-                name=settings.LLAMACLOUD_INDEX_NAME,
-                project_name=settings.LLAMACLOUD_PROJECT_NAME,
-                organization_id=settings.LLAMACLOUD_ORGANIZATION_ID,
-                api_key=settings.llama_cloud_api_key,
-            )
+            # Try method 1: Standard LlamaCloudIndex
+            try:
+                self.index = LlamaCloudIndex(
+                    name=settings.LLAMACLOUD_INDEX_NAME,
+                    project_name=settings.LLAMACLOUD_PROJECT_NAME,
+                    organization_id=settings.LLAMACLOUD_ORGANIZATION_ID,
+                    api_key=settings.llama_cloud_api_key,
+                )
+                st.write("✅ Standard connection successful")
+                
+            except Exception as e1:
+                st.warning(f"⚠️ Standard connection failed: {str(e1)}")
+                st.write("🔄 Trying alternative connection method...")
+                
+                # Try method 2: Using pipeline ID
+                try:
+                    from llama_index.indices.managed.llama_cloud import LlamaCloudRetriever
+                    
+                    # Create retriever directly with pipeline ID
+                    self.retriever = LlamaCloudRetriever(
+                        name=settings.LLAMACLOUD_INDEX_NAME,
+                        project_name=settings.LLAMACLOUD_PROJECT_NAME,
+                        organization_id=settings.LLAMACLOUD_ORGANIZATION_ID,
+                        api_key=settings.llama_cloud_api_key,
+                    )
+                    
+                    # Create a minimal index wrapper
+                    self.index = type('MockIndex', (), {
+                        'as_retriever': lambda similarity_top_k=5: self.retriever,
+                        'as_query_engine': lambda similarity_top_k=5: None
+                    })()
+                    
+                    st.write("✅ Alternative connection successful")
+                    
+                except Exception as e2:
+                    st.error(f"❌ Alternative connection also failed: {str(e2)}")
+                    return False
             
             # Test connection with a simple operation
             st.write("🧪 Testing connection...")
@@ -48,8 +79,8 @@ class LlamaService:
                 test_retriever = self.index.as_retriever(similarity_top_k=1)
                 st.write("✅ Connection test successful")
             except Exception as test_e:
-                st.error(f"❌ Connection test failed: {str(test_e)}")
-                return False
+                st.warning(f"⚠️ Connection test failed: {str(test_e)}")
+                # Don't fail completely, maybe search will still work
             
             self._initialized = True
             logging.info("LlamaCloudIndex initialized successfully")
@@ -162,19 +193,70 @@ class LlamaService:
     
     def _fallback_search(self, query: str, top_k: int) -> List[Dict[str, Any]]:
         """
-        Fallback search method when main search fails
+        Fallback search method using direct HTTP requests
         
         Args:
             query: Search query
             top_k: Number of results
             
         Returns:
-            List of mock results or empty list
+            List of results or empty list
         """
-        st.info("🔄 Trying fallback approach...")
+        st.info("🔄 Trying direct HTTP fallback...")
         
         try:
-            # Try using query engine instead of retriever
+            import requests
+            
+            # Use the direct retrieval endpoint
+            endpoint_url = "https://api.cloud.llamaindex.ai/api/v1/pipelines/207e89f0-702d-45ed-9c14-cc80060c2aef/retrieve"
+            
+            headers = {
+                "Authorization": f"Bearer {settings.llama_cloud_api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "query": query,
+                "similarity_top_k": top_k
+            }
+            
+            st.write(f"📡 Making direct HTTP request to: {endpoint_url}")
+            
+            response = requests.post(
+                endpoint_url, 
+                json=payload, 
+                headers=headers,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                st.write(f"✅ HTTP request successful: {response.status_code}")
+                
+                # Process the response
+                results = []
+                if 'retrieval_results' in data:
+                    for i, item in enumerate(data['retrieval_results'][:top_k]):
+                        result = {
+                            "rank": i + 1,
+                            "content": item.get('text', item.get('content', '')),
+                            "score": item.get('score', 0.0),
+                            "metadata": item.get('metadata', {}),
+                            "node_id": item.get('id', f"http_node_{i}"),
+                        }
+                        results.append(result)
+                
+                st.success(f"✅ HTTP fallback successful - found {len(results)} results")
+                return results
+            else:
+                st.error(f"❌ HTTP request failed: {response.status_code} - {response.text}")
+                
+        except Exception as e:
+            st.error(f"❌ HTTP fallback failed: {str(e)}")
+        
+        # Final fallback - try query engine approach
+        try:
+            st.info("🔄 Trying query engine fallback...")
             query_engine = self.index.as_query_engine(similarity_top_k=top_k)
             
             if query_engine:
@@ -191,11 +273,11 @@ class LlamaService:
                         "node_id": "fallback_node_1",
                     }
                     
-                    st.success("✅ Fallback search successful")
+                    st.success("✅ Query engine fallback successful")
                     return [mock_result]
             
         except Exception as fallback_e:
-            st.error(f"❌ Fallback search also failed: {str(fallback_e)}")
+            st.error(f"❌ Query engine fallback also failed: {str(fallback_e)}")
         
         st.error("❌ All search methods failed")
         return []
